@@ -174,6 +174,11 @@ def build_database():
     df_gpa = df_gpa[df_gpa['Primary Instructor'] != '']
     df_gpa = df_gpa[~df_gpa['Primary Instructor'].str.lower().isin(['us', 'unknown', 'nan', 'none'])]
 
+    # Sort df_gpa chronologically descending by Year and Term rank
+    df_gpa['Year'] = pd.to_numeric(df_gpa['Year'], errors='coerce').fillna(0).astype(int)
+    df_gpa['term_rank'] = df_gpa['Term'].astype(str).str.strip().str.lower().map({'winter': 1, 'spring': 2, 'summer': 3, 'fall': 4}).fillna(0)
+    df_gpa = df_gpa.sort_values(by=['Year', 'term_rank'], ascending=[False, False])
+
     # Map each Course_ID to its cross-listed group representative
     course_to_rep = {}
     for course, group in course_to_group.items():
@@ -252,13 +257,18 @@ def build_database():
     df_cat['Number'] = df_cat['Number'].astype(int)
     df_cat['Course_ID'] = df_cat['Subject'] + " " + df_cat['Number'].astype(str)
 
-    # Dedup catalog, keeping the latest offering (based on YearTerm or Year if exists, or just first)
-    if 'YearTerm' in df_cat.columns:
-        df_cat = df_cat.sort_values(by='YearTerm', ascending=False)
-    elif 'Year' in df_cat.columns:
-        df_cat = df_cat.sort_values(by='Year', ascending=False)
+    # Dedup catalog, keeping the latest offering based on chronological sort
+    df_cat_sorted = df_cat.copy()
+    df_cat_sorted['Year'] = pd.to_numeric(df_cat_sorted['Year'], errors='coerce').fillna(0).astype(int)
+    df_cat_sorted['term_rank'] = df_cat_sorted['Term'].astype(str).str.strip().str.lower().map({'winter': 1, 'spring': 2, 'summer': 3, 'fall': 4}).fillna(0)
+    df_cat_sorted = df_cat_sorted.sort_values(by=['Year', 'term_rank'], ascending=[False, False])
+    df_cat_dedup = df_cat_sorted.drop_duplicates(subset=['Course_ID'], keep='first').copy()
 
-    df_cat_dedup = df_cat.drop_duplicates(subset=['Course_ID'], keep='first').copy()
+    # Populate most_recent_offered for catalog courses
+    df_cat_dedup['most_recent_offered'] = df_cat_dedup.apply(
+        lambda r: f"{str(r['Term']).strip()} {int(r['Year'])}" if pd.notna(r.get('Term')) and pd.notna(r.get('Year')) and r['Year'] > 0 else "N/A",
+        axis=1
+    )
 
     # Select catalog columns
     catalog_cols_map = {
@@ -268,7 +278,8 @@ def build_database():
         'Name': 'title',
         'Description': 'description',
         'Credit Hours': 'credit_hours',
-        'Degree Attributes': 'degree_attributes'
+        'Degree Attributes': 'degree_attributes',
+        'most_recent_offered': 'most_recent_offered'
     }
 
     # In case catalog does not have Name, try Course Title
@@ -289,9 +300,9 @@ def build_database():
 
     if missing_courses:
         print(f"Found {len(missing_courses)} courses in GPA dataset that are missing in the catalog. Adding stubs...")
-        # Get course title from original GPA dataset for these missing courses
-        # We find the first occurrence of Course Title for each course ID in df_gpa
-        gpa_titles = df_gpa.drop_duplicates(subset=['Course_ID'], keep='first')[['Course_ID', 'Subject', 'Number', 'Course Title']]
+        # Get course title and latest offering from original GPA dataset for these missing courses
+        # Since df_gpa is sorted chronologically descending, we find the first occurrence
+        gpa_titles = df_gpa.drop_duplicates(subset=['Course_ID'], keep='first')[['Course_ID', 'Subject', 'Number', 'Course Title', 'Term', 'Year']]
         
         stubs = []
         for course_id in missing_courses:
@@ -300,11 +311,15 @@ def build_database():
                 subj = row_data.iloc[0]['Subject']
                 num = int(row_data.iloc[0]['Number'])
                 title = row_data.iloc[0]['Course Title']
+                t = str(row_data.iloc[0]['Term']).strip()
+                y = int(row_data.iloc[0]['Year']) if pd.notna(row_data.iloc[0]['Year']) and row_data.iloc[0]['Year'] > 0 else 0
+                offered = f"{t} {y}" if t and t.lower() != 'nan' and y > 0 else "N/A"
             else:
                 parts = course_id.split()
                 subj = parts[0]
                 num = int(parts[1]) if len(parts) > 1 else 0
                 title = f"{course_id} (Historical Course)"
+                offered = "N/A"
 
             stubs.append({
                 'course_id': course_id,
@@ -313,7 +328,8 @@ def build_database():
                 'title': title,
                 'description': "No description available in the current course catalog. This may be a historical course.",
                 'credit_hours': "N/A",
-                'degree_attributes': "N/A"
+                'degree_attributes': "N/A",
+                'most_recent_offered': offered
             })
         
         df_stubs = pd.DataFrame(stubs)
@@ -336,7 +352,8 @@ def build_database():
         title TEXT,
         description TEXT,
         credit_hours TEXT,
-        degree_attributes TEXT
+        degree_attributes TEXT,
+        most_recent_offered TEXT
     )
     """)
 

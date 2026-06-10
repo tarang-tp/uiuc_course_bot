@@ -109,7 +109,7 @@ class ProfessorSelect(discord.ui.Select):
         ).fetchone()
         
         course_info = conn.execute(
-            "SELECT title, description, credit_hours, degree_attributes FROM courses WHERE course_id = ?",
+            "SELECT title, description, credit_hours, degree_attributes, most_recent_offered FROM courses WHERE course_id = ?",
             (self.course_id,)
         ).fetchone()
 
@@ -172,6 +172,7 @@ class ProfessorSelect(discord.ui.Select):
             embed.add_field(name="Attributes", value=attributes_val, inline=False)
             embed.add_field(name="Credit Hours", value=course_info['credit_hours'] or "N/A", inline=False)
             embed.add_field(name="Average Recent GPA", value=f"{row['average_gpa']:.2f}", inline=False)
+            embed.add_field(name="Most Recent Offering", value=course_info['most_recent_offered'] or "N/A", inline=False)
             embed.add_field(name="Course Explorer", value=course_explorer_link, inline=False)
         else:
             if excellent_count > 0:
@@ -226,7 +227,7 @@ async def course_command(interaction: discord.Interaction, course: str):
     conn = get_db_connection()
     # 1. Fetch Course Info
     course_info = conn.execute(
-        "SELECT title, description, credit_hours, degree_attributes FROM courses WHERE course_id = ?",
+        "SELECT title, description, credit_hours, degree_attributes, most_recent_offered FROM courses WHERE course_id = ?",
         (course_id,)
     ).fetchone()
 
@@ -282,6 +283,8 @@ async def course_command(interaction: discord.Interaction, course: str):
         embed.add_field(name="Average Recent GPA", value=f"{overall_stats['average_gpa']:.2f}", inline=False)
     else:
         embed.add_field(name="Average Recent GPA", value="N/A", inline=False)
+
+    embed.add_field(name="Most Recent Offering", value=course_info['most_recent_offered'] or "N/A", inline=False)
 
     # Add Course Explorer link
     subj, num = course_id.split(maxsplit=1)
