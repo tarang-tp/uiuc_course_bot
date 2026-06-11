@@ -49,7 +49,7 @@ The compiler (`build_db.py`) runs dynamically on setup or monthly in the backgro
 ### 1. Clone & Install Dependencies
 Ensure you have Python 3.10+ installed:
 ```bash
-git clone https://github.com/yourusername/uiuc-discord-bot.git
+git clone https://github.com/tarang-tp/uiuc-discord-bot.git
 cd uiuc-discord-bot
 pip install -r requirements.txt
 ```
