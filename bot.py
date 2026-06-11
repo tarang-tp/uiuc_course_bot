@@ -351,12 +351,13 @@ async def course_command(interaction: discord.Interaction, course: str):
         else:
             await interaction.followup.send(embed=embed)
 
-# New slash command `/gened [category1] [category2] [min_gpa]`
-@bot.tree.command(name="gened", description="Find the easiest Gen-Ed courses matching one or two constraints")
+# New slash command `/gened [category1] [category2] [min_gpa] [keyword]`
+@bot.tree.command(name="gened", description="Find the easiest Gen-Ed courses matching one or two constraints with an optional keyword")
 @app_commands.describe(
     category1="The first Gen-Ed category to filter for",
     category2="An optional second Gen-Ed category to filter for (simultaneous requirement)",
-    min_gpa="The minimum historical average GPA required (default: 3.4)"
+    min_gpa="The minimum historical average GPA required (default: 3.4)",
+    keyword="An optional keyword or topic to search for in course titles, descriptions, or codes"
 )
 @app_commands.choices(category1=[
     app_commands.Choice(name="Advanced Composition (ACP)", value="ACP"),
@@ -380,7 +381,8 @@ async def gened_command(
     interaction: discord.Interaction, 
     category1: app_commands.Choice[str], 
     category2: app_commands.Choice[str] = None, 
-    min_gpa: float = 3.4
+    min_gpa: float = 3.4,
+    keyword: str = None
 ):
     # Defer response to ensure smooth SQL join execution
     await interaction.response.defer()
@@ -410,38 +412,41 @@ async def gened_command(
     cat1_pattern = category_map[cat1_val]
     
     conn = get_db_connection()
+    
+    # Build query dynamically
+    query = """
+        SELECT c.course_id, c.title, g.average_gpa, c.credit_hours
+        FROM courses c
+        JOIN gpa_stats g ON c.course_id = g.course_id
+        WHERE g.instructor = 'ALL INSTRUCTORS COMBINED'
+          AND g.average_gpa >= ?
+          AND c.degree_attributes LIKE ?
+    """
+    params = [min_gpa, cat1_pattern]
+    
+    search_title = cat1_name
+    
     if category2:
         cat2_val = category2.value
         cat2_name = category_names[cat2_val]
         cat2_pattern = category_map[cat2_val]
+        query += " AND c.degree_attributes LIKE ?"
+        params.append(cat2_pattern)
         search_title = f"{cat1_name} & {cat2_name}"
-        
-        query = """
-            SELECT c.course_id, c.title, g.average_gpa, c.credit_hours
-            FROM courses c
-            JOIN gpa_stats g ON c.course_id = g.course_id
-            WHERE g.instructor = 'ALL INSTRUCTORS COMBINED'
-              AND g.average_gpa >= ?
-              AND c.degree_attributes LIKE ?
-              AND c.degree_attributes LIKE ?
-            ORDER BY g.average_gpa DESC
-            LIMIT 5
-        """
-        rows = conn.execute(query, (min_gpa, cat1_pattern, cat2_pattern)).fetchall()
-    else:
-        search_title = cat1_name
-        query = """
-            SELECT c.course_id, c.title, g.average_gpa, c.credit_hours
-            FROM courses c
-            JOIN gpa_stats g ON c.course_id = g.course_id
-            WHERE g.instructor = 'ALL INSTRUCTORS COMBINED'
-              AND g.average_gpa >= ?
-              AND c.degree_attributes LIKE ?
-            ORDER BY g.average_gpa DESC
-            LIMIT 5
-        """
-        rows = conn.execute(query, (min_gpa, cat1_pattern)).fetchall()
-        
+
+    if keyword:
+        keyword = keyword.strip()
+        query += " AND (c.title LIKE ? OR c.description LIKE ? OR c.course_id LIKE ?)"
+        keyword_pattern = f"%{keyword}%"
+        params.extend([keyword_pattern, keyword_pattern, keyword_pattern])
+        search_title += f' matching "{keyword}"'
+
+    query += """
+        ORDER BY g.average_gpa DESC
+        LIMIT 5
+    """
+    
+    rows = conn.execute(query, params).fetchall()
     conn.close()
 
     if not rows:
