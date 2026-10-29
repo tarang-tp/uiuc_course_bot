@@ -79,6 +79,85 @@ def extract_gened_codes(attributes):
         codes.append('NAT')
     return codes
 
+def parse_course_id(text):
+    """Normalize input like 'cs225' or 'CS 225' to 'CS 225'. Returns None if invalid."""
+    match = re.match(r"^\s*([A-Za-z]+)\s*(\d+)\s*$", text or "")
+    if not match:
+        return None
+    return f"{match.group(1).upper()} {int(match.group(2))}"
+
+# Minimum graded students for an instructor to count as "best instructor" in /compare
+MIN_INSTRUCTOR_SAMPLE = 30
+
+def fetch_compare_data(conn, course_id):
+    """Gather the stats shown for one course in /compare. Returns None if the course is unknown."""
+    info = conn.execute(
+        "SELECT title, credit_hours, degree_attributes, most_recent_offered FROM courses WHERE course_id = ?",
+        (course_id,)
+    ).fetchone()
+    if not info:
+        return None
+
+    overall = conn.execute(
+        """
+        SELECT average_gpa, total_graded FROM gpa_stats
+        WHERE course_id = ? AND instructor = 'ALL INSTRUCTORS COMBINED'
+        """,
+        (course_id,)
+    ).fetchone()
+
+    best = conn.execute(
+        """
+        SELECT instructor, average_gpa FROM gpa_stats
+        WHERE course_id = ? AND instructor != 'ALL INSTRUCTORS COMBINED' AND total_graded >= ?
+        ORDER BY average_gpa DESC LIMIT 1
+        """,
+        (course_id, MIN_INSTRUCTOR_SAMPLE)
+    ).fetchone()
+
+    return {
+        'course_id': course_id,
+        'title': html.unescape(info['title'] or ""),
+        'credit_hours': info['credit_hours'] or "N/A",
+        'attributes': info['degree_attributes'] if info['degree_attributes'] not in (None, "N/A") else "None",
+        'most_recent_offered': info['most_recent_offered'] or "N/A",
+        'average_gpa': overall['average_gpa'] if overall else None,
+        'total_graded': overall['total_graded'] if overall else None,
+        'best_instructor': best['instructor'] if best else None,
+        'best_instructor_gpa': best['average_gpa'] if best else None,
+    }
+
+def build_compare_embed(a, b):
+    """Build the side-by-side comparison embed for two courses from fetch_compare_data."""
+    embed = discord.Embed(
+        title=f"⚖️ {a['course_id']} vs {b['course_id']}",
+        color=discord.Color.purple()
+    )
+    for c in (a, b):
+        gpa = f"{c['average_gpa']:.2f}" if c['average_gpa'] is not None else "N/A"
+        students = f"{c['total_graded']:,}" if c['total_graded'] is not None else "N/A"
+        lines = [
+            f"**{c['title']}**",
+            f"Avg GPA: **{gpa}**",
+            f"Students graded: {students}",
+            f"Credits: {c['credit_hours']}",
+            f"Attributes: {c['attributes']}",
+            f"Last offered: {c['most_recent_offered']}",
+        ]
+        if c['best_instructor']:
+            lines.append(f"Top instructor: {c['best_instructor']} ({c['best_instructor_gpa']:.2f})")
+        embed.add_field(name=c['course_id'], value="\n".join(lines)[:1024], inline=True)
+
+    if a['average_gpa'] is not None and b['average_gpa'] is not None:
+        diff = a['average_gpa'] - b['average_gpa']
+        if abs(diff) < 0.005:
+            verdict = "Both courses have essentially the same average GPA."
+        else:
+            easier, harder = (a, b) if diff > 0 else (b, a)
+            verdict = f"**{easier['course_id']}** has the higher average GPA by **{abs(diff):.2f}**."
+        embed.add_field(name="Verdict", value=verdict, inline=False)
+    return embed
+
 # Interactive View and Select components for Professor Selection
 class ProfessorSelect(discord.ui.Select):
     def __init__(self, course_id, options):
@@ -209,17 +288,13 @@ class CourseView(discord.ui.View):
 )
 async def course_command(interaction: discord.Interaction, course: str):
     # Parse and normalize course input (handles formatting with/without spaces)
-    match = re.match(r"^\s*([A-Za-z]+)\s*(\d+)\s*$", course)
-    if not match:
+    course_id = parse_course_id(course)
+    if not course_id:
         await interaction.response.send_message(
             f"❌ Invalid course format. Please search using a format like `CS225` or `CS 225`.",
             ephemeral=True
         )
         return
-        
-    subj_norm = match.group(1).upper()
-    number = int(match.group(2))
-    course_id = f"{subj_norm} {number}"
 
     # Defer response since chart generation is synchronous and takes time
     await interaction.response.defer()
@@ -350,6 +425,42 @@ async def course_command(interaction: discord.Interaction, course: str):
             await interaction.followup.send(embed=embed, file=file)
         else:
             await interaction.followup.send(embed=embed)
+
+# Slash command `/compare [course1] [course2]`
+@bot.tree.command(name="compare", description="Compare two courses side by side (GPA, credits, Gen-Eds, top instructor)")
+@app_commands.describe(
+    course1="The first course code (e.g., CS225)",
+    course2="The second course code (e.g., MATH 241)"
+)
+async def compare_command(interaction: discord.Interaction, course1: str, course2: str):
+    id1, id2 = parse_course_id(course1), parse_course_id(course2)
+    if not id1 or not id2:
+        await interaction.response.send_message(
+            "❌ Invalid course format. Please use a format like `CS225` or `CS 225` for both courses.",
+            ephemeral=True
+        )
+        return
+    if id1 == id2:
+        await interaction.response.send_message(
+            "❌ Please pick two different courses to compare.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer()
+
+    conn = get_db_connection()
+    data1 = fetch_compare_data(conn, id1)
+    data2 = fetch_compare_data(conn, id2)
+    conn.close()
+
+    missing = [cid for cid, d in ((id1, data1), (id2, data2)) if d is None]
+    if missing:
+        names = " and ".join(f"`{m}`" for m in missing)
+        await interaction.followup.send(f"❌ {names} not found in the UIUC Catalog or GPA Database.")
+        return
+
+    await interaction.followup.send(embed=build_compare_embed(data1, data2))
 
 # New slash command `/gened [category1] [category2] [min_gpa] [keyword]`
 @bot.tree.command(name="gened", description="Find the easiest Gen-Ed courses matching one or two constraints with an optional keyword")

@@ -29,7 +29,12 @@ Parses a raw class schedule string (e.g. `cs225 mwf 11:00, math241 tth 13:00`) a
 - **TU/TH Duration Handling**: Tuesday/Thursday classes default to 80-minute blocks, others default to 50-minute blocks.
 - **Recurrence Bounds**: Automatically recurs weekly until the end of instruction (Wednesday, December 9, 2026).
 
-### 5. `/update_db` (Admin Only)
+### 5. `/compare [course1] [course2]`
+Compares two courses side by side.
+- **Per-Course Stats**: Title, average GPA, number of students graded, credit hours, Gen-Ed attributes, most recent offering, and top instructor (highest GPA with at least 30 graded students).
+- **Verdict**: States which course has the higher average GPA and by how much.
+
+### 6. `/update_db` (Admin Only)
 Forces an instant reload and re-compilation of the SQLite database using Wade Fagen-Ulmschneider's latest GPA, catalog, and CITL accolades datasets.
 
 ---
@@ -89,3 +94,4 @@ Run validation scripts to verify components work as expected:
 - `test_track.py`: Asserts structural formatting and length limits for graduation tracks.
 - `test_recent_offered.py`: Checks the courses table for the `most_recent_offered` column.
 - `test_gened_keyword.py`: Validates Gen-Ed category queries combined with keyword searches.
+- `test_compare.py`: Tests course code parsing, `/compare` data lookups, embed output, and command error paths.
